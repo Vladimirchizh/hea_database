@@ -20,14 +20,15 @@ This dataset contains detailed information about various High Entropy Alloys, in
 - **Type of solution**: Classification of the solution type
 
 ### Example Entry:
-```
-Alloy: AlCoCrFeNi
-Phases: BCC B2 + FCC L12
-Type: Experimental
-Experimental Details: vacuum arc melting, Purity: >= 99.98 wt%, Repetition: at least 5 times
-Special Conditions: Partially ordered structure, classified as High Entropy Intermetallic
-Type of Solution: Mixed Solution
-```
+
+| Field | Value |
+|-------|-------|
+| Alloy | AlCoCrFeNi |
+| Phases | BCC B2 + FCC L12 |
+| Type | Experimental |
+| Experimental Details | vacuum arc melting, Purity: >= 99.98 wt%, Repetition: at least 5 times |
+| Special Conditions | Partially ordered structure, classified as High Entropy Intermetallic |
+| Type of Solution | Mixed Solution |
 
 ## 2. Database of Raw Responses (`database_of_raw_responses.csv`)
 
