@@ -4,13 +4,17 @@ import matplotlib.patches as mpatches
 import matplotlib as mpl
 import numpy as np
 import re
+import matplotlib.patches as patches
+from matplotlib.path import Path
+from collections import Counter, defaultdict
+import networkx as nx
 
 
 plt.style.use('default')
 mpl.rcParams['font.family'] = 'Arial'
 mpl.rcParams['font.size'] = 10
 
-df = pd.read_csv('merged_data_unnested.csv')
+df = pd.read_csv('database_of_HEAs.csv')
 
 dictionary = {
     "Melting Methods": {
@@ -322,12 +326,10 @@ dictionary = {
         },
     },
 }
-
-
-category_counts = {category: 0 for category in dictionary.keys()}
-method_group_counts = {category: {mg: 0 for mg in methods.keys()} for category, methods in dictionary.items()}
-method_counts = {category: {mg: {} for mg in methods.keys()} for category, methods in dictionary.items()}
-other_count = 0
+category_alloy_counts = {category: 0 for category in dictionary.keys()}
+method_group_alloy_counts = {category: {mg: 0 for mg in methods.keys()} for category, methods in dictionary.items()}
+method_alloy_counts = {category: {mg: {} for mg in methods.keys()} for category, methods in dictionary.items()}
+other_alloy_count = 0
 other_details = []
 
 def normalize_text(text):
@@ -335,124 +337,271 @@ def normalize_text(text):
     text = re.sub(r'[-\s]+', ' ', text)
     return text.strip()
 
-
-for details in df['Experimental details']:
-    if pd.isna(details):
-        continue
-
-    found_method = False
-    normalized_details = normalize_text(str(details))
-
-    for category, method_groups in dictionary.items():
-        for method_group, methods in method_groups.items():
-            for method_key, method_value in methods.items():
-                normalized_key = normalize_text(method_key)
-                if normalized_key in normalized_details:
-                    category_counts[category] += 1
-                    method_group_counts[category][method_group] += 1
-                    if method_value not in method_counts[category][method_group]:
-                        method_counts[category][method_group][method_value] = 0
-                    method_counts[category][method_group][method_value] += 1
-                    found_method = True
-    if not found_method:
-        other_count += 1
-        other_details.append(details)
-
-
 ordered_categories = list(dictionary.keys())
 if "Special Processing" in ordered_categories:
     ordered_categories.remove("Special Processing")
     ordered_categories.append("Special Processing")
 
+# Process data - count each category only once per alloy row
+total_alloys = len(df)
+article_categories = []
 
-main_labels = []
-main_sizes = []
-main_category_angles = []
-total = sum(category_counts[c] for c in ordered_categories) + other_count
-startangle = 90
-current_angle = startangle
+for idx, details in enumerate(df['Experimental details']):
+    if pd.isna(details):
+        continue
 
-for category in ordered_categories:
-    count = category_counts[category]
-    if count > 0:
-        main_labels.append(category)
-        main_sizes.append(count)
-        angle_span = (count / total) * 360
-        angle_center = current_angle + angle_span / 2
-        main_category_angles.append(angle_center)
-        current_angle += angle_span
+    normalized_details = normalize_text(str(details))
+    alloy = df['Alloy'].iloc[idx] if 'Alloy' in df.columns else None
+    
+    # Track which categories are found for this alloy (to avoid double counting)
+    found_categories = set()
+    found_method_groups = {category: set() for category in dictionary.keys()}
+    found_methods = {category: {mg: set() for mg in methods.keys()} for category, methods in dictionary.items()}
+    
+    # Check all methods for this alloy
+    for category, method_groups in dictionary.items():
+        for method_group, methods in method_groups.items():
+            for method_key, method_value in methods.items():
+                normalized_key = normalize_text(method_key)
+                if normalized_key in normalized_details:
+                    found_categories.add(category)
+                    found_method_groups[category].add(method_group)
+                    found_methods[category][method_group].add(method_value)
+    
+    # Count each category/method group/method only once per alloy
+    for category in found_categories:
+        category_alloy_counts[category] += 1
+        
+        for method_group in found_method_groups[category]:
+            method_group_alloy_counts[category][method_group] += 1
+            
+            for method_value in found_methods[category][method_group]:
+                if method_value not in method_alloy_counts[category][method_group]:
+                    method_alloy_counts[category][method_group][method_value] = 0
+                method_alloy_counts[category][method_group][method_value] += 1
+    
+    # Track categories for co-occurrence analysis
+    article_categories.append(found_categories)
+    
+    # Count as "other" if no methods found
+    if not found_categories:
+        other_alloy_count += 1
+        other_details.append(details)
 
-if other_count > 0:
-    main_labels.append("Other")
-    main_sizes.append(other_count)
-    angle_span = (other_count / total) * 360
-    angle_center = current_angle + angle_span / 2
-    main_category_angles.append(angle_center)
+# Calculate co-occurrence data for network chart
+co_occurrence = Counter()
+for found_categories in article_categories:
+    # Count all pairs
+    for cat1 in found_categories:
+        for cat2 in found_categories:
+            if cat1 < cat2:
+                co_occurrence[(cat1, cat2)] += 1
 
+# Create networkx graph
+G = nx.Graph()
+node_sizes = {cat: category_alloy_counts[cat] for cat in ordered_categories}
+for cat in ordered_categories:
+    if node_sizes[cat] > 0:  # Only add nodes with data
+        G.add_node(cat, size=node_sizes[cat])
+
+for (cat1, cat2), weight in co_occurrence.items():
+    if cat1 in G.nodes and cat2 in G.nodes:  # Only add edges between existing nodes
+        G.add_edge(cat1, cat2, weight=weight)
 
 colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
 
-fig = plt.figure(figsize=(16, 12))
+def draw_curved_edge(ax, pos1, pos2, color, width, alpha, curve_factor=0.3):
+    """Draw a curved edge between two positions"""
+    x1, y1 = pos1
+    x2, y2 = pos2
+    
+    # Calculate control point for curve
+    mid_x = (x1 + x2) / 2
+    mid_y = (y1 + y2) / 2
+    
+    # Calculate perpendicular offset for curve
+    dx = x2 - x1
+    dy = y2 - y1
+    
+    # Perpendicular vector
+    perp_x = -dy * curve_factor
+    perp_y = dx * curve_factor
+    
+    # Control point
+    ctrl_x = mid_x + perp_x
+    ctrl_y = mid_y + perp_y
+    
+    # Create curved path
+    verts = [(x1, y1), (ctrl_x, ctrl_y), (x2, y2)]
+    codes = [Path.MOVETO, Path.CURVE3, Path.CURVE3]
+    
+    path = Path(verts, codes)
+    patch = patches.PathPatch(path, facecolor='none', edgecolor=color, 
+                             linewidth=width, alpha=alpha, capstyle='round')
+    ax.add_patch(patch)
 
-# Main pie chart
-ax_main = plt.subplot2grid((3, 3), (0, 0), colspan=2, rowspan=2)
+# Create the main figure with network chart as primary visualization
+fig = plt.figure(figsize=(18, 12))
 
-# Custom autopct function
-def autopct_func(pct):
-    return f'{pct:.1f}%' if pct >= 3.0 else ''
+# Network chart takes the main space (left 2/3 of the figure)
+ax_network = plt.subplot2grid((3, 4), (0, 0), colspan=3, rowspan=3)
 
-wedges, texts, autotexts = ax_main.pie(
-    main_sizes,
-    labels=main_labels,
-    autopct=autopct_func,
-    startangle=90,
-    colors=colors[:len(main_sizes)],
-    wedgeprops=dict(edgecolor='white', linewidth=2),
-    textprops={'fontsize': 12, 'fontweight': 'bold'},
-    labeldistance=1.1,
-    pctdistance=0.85
-)
+if G.number_of_nodes() > 0:
+    # Use circular layout
+    pos = nx.circular_layout(G, scale=2)
+    
+    # Calculate edge weights for coloring
+    edge_list = list(G.edges(data=True))
+    if edge_list:
+        weights = [d['weight'] for u, v, d in edge_list]
+        max_weight = max(weights)
+        min_weight = min(weights)
+        total_weight = sum(weights)
+        
+        # Sort weights to find quartiles for better color separation
+        sorted_weights = sorted(weights)
+        q75 = sorted_weights[int(0.75 * len(sorted_weights))] if len(sorted_weights) > 0 else max_weight
+        
+        # Draw curved edges with improved label positioning
+        for i, (u, v, d) in enumerate(edge_list):
+            pos1 = pos[u]
+            pos2 = pos[v]
+            
+            # Alternate curve direction for visual appeal
+            curve_factor = 0.4 if i % 2 == 0 else -0.4
+            
+            # Normalize weight for scaling (0 to 1)
+            normalized_weight = (d['weight'] - min_weight) / (max_weight - min_weight) if max_weight > min_weight else 0.5
+            
+            # Color and width based on weight
+            if d['weight'] >= q75:  # Top 25% get red
+                edge_color = '#d62728'  # Red for strong connections
+                alpha = 0.9
+                width = 3 + 5 * (normalized_weight ** 1.5)
+            else:
+                edge_color = '#1f77b4'  # Blue for weaker connections
+                alpha = 0.7
+                width = 1 + 3 * normalized_weight
+            
+            # Draw the curved edge
+            draw_curved_edge(ax_network, pos1, pos2, edge_color, width, alpha, curve_factor)
+            
+            # Add percentage label with better positioning
+            edge_percentage = (d['weight'] / total_weight * 100) if total_weight > 0 else 0
+            
+            # Calculate label position along the curve
+            t = 0.5  # Midpoint of curve
+            # Quadratic Bezier curve point calculation
+            ctrl_x = (pos1[0] + pos2[0]) / 2 + (-((pos2[1] - pos1[1]) * curve_factor))
+            ctrl_y = (pos1[1] + pos2[1]) / 2 + (((pos2[0] - pos1[0]) * curve_factor))
+            
+            label_x = (1-t)**2 * pos1[0] + 2*(1-t)*t * ctrl_x + t**2 * pos2[0]
+            label_y = (1-t)**2 * pos1[1] + 2*(1-t)*t * ctrl_y + t**2 * pos2[1]
+            
+            # Only show percentages for significant connections
+            if d['weight'] >= q75 or edge_percentage >= 3.0:
+                # Add background box for better readability
+                bbox_props = dict(boxstyle='round,pad=0.25', facecolor='white', 
+                                alpha=0.9, edgecolor=edge_color, linewidth=1)
+                ax_network.text(label_x, label_y, f'{edge_percentage:.1f}%', 
+                               fontsize=9, fontweight='bold', color=edge_color,
+                               bbox=bbox_props, ha='center', va='center', zorder=10)
+    
+    # Draw nodes with size based on alloy counts
+    if node_sizes:
+        max_size = max(node_sizes.values())
+        min_size = min(node_sizes.values())
+        
+        # Use exponential scaling for more dramatic size differences
+        base_size = 800
+        max_node_size = 2500
+        
+        # Highlight the largest node in red
+        special_node = max(node_sizes, key=node_sizes.get)
+        node_colors = []
+        node_sizes_list = []
+        
+        for node in G.nodes:
+            # Normalize to 0-1 range
+            normalized_size = (node_sizes[node] - min_size) / (max_size - min_size) if max_size > min_size else 0.5
+            # Apply square root for more dramatic differences
+            scaled_size = base_size + (max_node_size - base_size) * (normalized_size ** 0.5)
+            node_sizes_list.append(scaled_size)
+            
+            if node == special_node:
+                node_colors.append('#d62728')  # Red highlight
+            else:
+                node_colors.append('#2ca02c')  # Green
+        
+        # Draw nodes
+        nx.draw_networkx_nodes(
+            G, pos,
+            node_size=node_sizes_list,
+            node_color=node_colors,
+            edgecolors='white',
+            linewidths=3,
+            ax=ax_network,
+            alpha=0.95
+        )
+        
+        # Draw labels with percentages based on total alloys
+        labels_with_percentages = {}
+        for node in G.nodes:
+            percentage = (node_sizes[node] / total_alloys * 100) if total_alloys > 0 else 0
+            labels_with_percentages[node] = f"{node}\n({percentage:.1f}%)"
+        
+        nx.draw_networkx_labels(
+            G, pos,
+            labels=labels_with_percentages,
+            font_size=10,
+            font_weight='bold',
+            font_color='black',
+            ax=ax_network
+        )
 
-# Style the percentage labels
-for autotext in autotexts:
-    autotext.set_color('white')
-    autotext.set_fontweight('bold')
-    autotext.set_fontsize(11)
+# Style the network plot
+ax_network.set_title('Processing Methods Co-occurrence Network\n(Node size = alloy count, Edge thickness = co-occurrence frequency)', 
+                    fontsize=16, fontweight='bold', pad=20)
+ax_network.set_aspect('equal')
+ax_network.axis('off')
+ax_network.set_xlim(-2.8, 2.8)
+ax_network.set_ylim(-2.8, 2.8)
 
-ax_main.set_title('Distribution of Processing Methods with Detailed Breakdown', fontsize=16, fontweight='bold', pad=20)
-
-# Create detailed breakdown charts for top categories
-top_categories = sorted([(count, cat) for cat, count in category_counts.items() if count > 0], reverse=True)[:6]
+# Create detailed breakdown charts for top categories (right side)
+categories_with_data = [(category_alloy_counts[cat], cat) for cat in ordered_categories if category_alloy_counts[cat] > 0]
+top_categories = sorted(categories_with_data, reverse=True)[:4]
 
 # Create subplot positions for detailed breakdowns
-subplot_positions = [(0, 2), (1, 2), (2, 0), (2, 1), (2, 2)]
+subplot_positions = [(0, 3), (1, 3), (2, 3)]
 
-for i, (count, category) in enumerate(top_categories[:5]):
+for i, (alloy_count, category) in enumerate(top_categories[:3]):
     if i >= len(subplot_positions):
         break
         
     row, col = subplot_positions[i]
-    ax_sub = plt.subplot2grid((3, 3), (row, col))
+    ax_sub = plt.subplot2grid((3, 4), (row, col))
     
-    # Get method group data
-    mg_counts = method_group_counts[category]
+    # Get method group data (using alloy counts)
+    mg_counts = method_group_alloy_counts[category]
     mg_labels = []
     mg_sizes = []
-    mg_total = sum(mg_counts.values())
     
     for mg, cnt in mg_counts.items():
         if cnt > 0:
             # Truncate long labels
-            label = mg if len(mg) <= 20 else mg[:17] + "..."
+            label = mg if len(mg) <= 15 else mg[:12] + "..."
             mg_labels.append(label)
             mg_sizes.append(cnt)
     
     if not mg_sizes:
         continue
 
-    # Get color for this category from main pie
-    main_idx = main_labels.index(category) if category in main_labels else 0
-    base_color = colors[main_idx % len(colors)]
+    # Get color for this category
+    if category in [cat for _, cat in top_categories]:
+        cat_idx = [cat for _, cat in top_categories].index(category)
+        base_color = colors[cat_idx % len(colors)]
+    else:
+        base_color = colors[0]
     
     # Generate color variations
     base_rgb = mpl.colors.to_rgb(base_color)
@@ -473,15 +622,16 @@ for i, (count, category) in enumerate(top_categories[:5]):
             return ''
 
     def subpie_label(label, pct):
-        return label if pct >= 4.0 else ''
+        return label if pct >= 8.0 else ''
 
+    mg_total = sum(mg_sizes)
     wedges_sub, texts_sub, autotexts_sub = ax_sub.pie(
         mg_sizes,
         labels=[subpie_label(l, p) for l, p in zip(mg_labels, (np.array(mg_sizes)/mg_total)*100)],
         colors=subcolors,
         startangle=90,
         autopct=sub_autopct,
-        textprops={'fontsize': 8, 'fontweight': 'bold', 'color': 'white'},
+        textprops={'fontsize': 8, 'fontweight': 'bold'},
         wedgeprops=dict(edgecolor='white', linewidth=1),
         labeldistance=1.1,
         pctdistance=0.7
@@ -498,57 +648,52 @@ for i, (count, category) in enumerate(top_categories[:5]):
         autotext.set_fontsize(7)
         autotext.set_fontweight('bold')
 
-    # Add category title
-    ax_sub.set_title(f'{category}\n(n={count})', fontsize=10, fontweight='bold', pad=10)
+    # Add category title with alloy count
+    percentage = (alloy_count / total_alloys) * 100 if total_alloys > 0 else 0
+    ax_sub.set_title(f'{category}\n{alloy_count} alloys ({percentage:.1f}%)', 
+                    fontsize=9, fontweight='bold', pad=10)
 
-    main_wedge_index = main_labels.index(category)
-    main_wedge = wedges[main_wedge_index]
-    main_wedge_center = main_wedge.center
-    main_wedge_angle = (main_wedge.theta1 + main_wedge.theta2) / 2
-    main_edge_x = main_wedge_center[0] + main_wedge.r * np.cos(np.deg2rad(main_wedge_angle))
-    main_edge_y = main_wedge_center[1] + main_wedge.r * np.sin(np.deg2rad(main_wedge_angle))
-    
-    sub_center = ax_sub.transAxes.transform((0.5, 0.5))
-    sub_center_display = fig.transFigure.inverted().transform(sub_center)
-
-# Add summary statistics as text
+# Update summary statistics
 summary_text = "Summary Statistics:\n"
-summary_text += "="*25 + "\n"
-for category in ordered_categories:
-    if category_counts[category] > 0:
-        pct = (category_counts[category] / total) * 100
-        summary_text += f"{category}: {category_counts[category]} ({pct:.1f}%)\n"
+summary_text += "="*30 + "\n"
+summary_text += "By alloy count:\n"
+for count, category in top_categories:
+    pct = (count / total_alloys) * 100 if total_alloys > 0 else 0
+    summary_text += f"  {category}: {count} ({pct:.1f}%)\n"
 
-if other_count > 0:
-    pct = (other_count / total) * 100
-    summary_text += f"Other: {other_count} ({pct:.1f}%)\n"
-summary_text += f"\nTotal Samples: {total}"
+if other_alloy_count > 0:
+    pct = (other_alloy_count / total_alloys) * 100 if total_alloys > 0 else 0
+    summary_text += f"  Other: {other_alloy_count} ({pct:.1f}%)\n"
+
+summary_text += f"\nTotal Alloys: {total_alloys}\n"
+summary_text += f"Network Edges: {G.number_of_edges()}\n"
+if 'total_weight' in locals():
+    summary_text += f"Total Co-occurrences: {total_weight}"
 
 # Add text box with summary
 fig.text(0.02, 0.02, summary_text, fontsize=9, family='monospace',
          bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8))
 
 plt.tight_layout()
-plt.subplots_adjust(bottom=0.25)
+plt.subplots_adjust(bottom=0.2)
 plt.show()
 
 # Print detailed summary
 print("\nDetailed Processing Methods Distribution:")
 print("="*60)
-for category in ordered_categories:
-    if category_counts[category] > 0:
-        pct = (category_counts[category] / total) * 100
-        print(f"\n{category}: {category_counts[category]} ({pct:.1f}%)")
-        
-        # Print method groups for this category
-        mg_counts = method_group_counts[category]
-        for mg, count in mg_counts.items():
-            if count > 0:
-                mg_pct = (count / category_counts[category]) * 100
-                print(f"  └─ {mg}: {count} ({mg_pct:.1f}%)")
+for count, category in top_categories:
+    pct_alloys = (count / total_alloys) * 100 if total_alloys > 0 else 0
+    print(f"\n{category}:")
+    print(f"  Alloys using this method: {count} ({pct_alloys:.1f}%)")
+    
+    # Print method groups for this category
+    mg_counts = method_group_alloy_counts[category]
+    for mg, mg_count in mg_counts.items():
+        if mg_count > 0:
+            mg_pct = (mg_count / count) * 100 if count > 0 else 0
+            print(f"    └─ {mg}: {mg_count} alloys ({mg_pct:.1f}%)")
 
-if other_count > 0:
-    pct = (other_count / total) * 100
-    print(f"\nOther: {other_count} ({pct:.1f}%)")
-
-print(f"\nGrand Total: {total} samples")
+print(f"\nTotal Alloys in Dataset: {total_alloys}")
+if G.number_of_nodes() > 0:
+    print(f"Network nodes: {G.number_of_nodes()}")
+    print(f"Network edges: {G.number_of_edges()}")
