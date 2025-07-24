@@ -12,7 +12,7 @@ import networkx as nx
 
 plt.style.use('default')
 mpl.rcParams['font.family'] = 'Arial'
-mpl.rcParams['font.size'] = 10
+mpl.rcParams['font.size'] = 15  # Set global font size to 15 pt (1.5x)
 
 df = pd.read_csv('database_of_HEAs.csv')
 
@@ -553,15 +553,15 @@ if G.number_of_nodes() > 0:
         nx.draw_networkx_labels(
             G, pos,
             labels=labels_with_percentages,
-            font_size=10,
-            font_weight='bold',
+            font_size=15,  # Node labels: 15 pt
+            font_weight='bold',  # Bold for node labels
             font_color='black',
             ax=ax_network
         )
 
 # Style the network plot
 ax_network.set_title('Processing Methods Co-occurrence Network\n(Node size = alloy count, Edge thickness = co-occurrence frequency)', 
-                    fontsize=16, fontweight='bold', pad=20)
+                    fontsize=24, fontweight='bold', pad=30)  # Main title: 24 pt bold
 ax_network.set_aspect('equal')
 ax_network.axis('off')
 ax_network.set_xlim(-2.8, 2.8)
@@ -588,8 +588,8 @@ for i, (alloy_count, category) in enumerate(top_categories[:3]):
     
     for mg, cnt in mg_counts.items():
         if cnt > 0:
-            # Truncate long labels
-            label = mg if len(mg) <= 15 else mg[:12] + "..."
+            # Use full label instead of truncating
+            label = mg
             mg_labels.append(label)
             mg_sizes.append(cnt)
     
@@ -612,67 +612,72 @@ for i, (alloy_count, category) in enumerate(top_categories[:3]):
         subcolors.append(varied_color)
     
     # Create sub-pie with better formatting
+    
+
+    def subpie_label(label, pct):
+        return label if pct >= 8.0 else ''
+
+    mg_total = alloy_count  # Use the count from top_categories for percentage calculation
+
     def sub_autopct(pct):
-        absolute = int(round(pct/100. * sum(mg_sizes)))
+
+        absolute = int(round(pct/100. * mg_total))
         if pct >= 10:
             return f'{absolute}\n({pct:.0f}%)'
         elif pct >= 5:
             return f'{absolute}'
         else:
             return ''
-
-    def subpie_label(label, pct):
-        return label if pct >= 8.0 else ''
-
-    mg_total = sum(mg_sizes)
+    print(f"mg_total: {mg_total}, mg_sizes: {mg_sizes}")
     wedges_sub, texts_sub, autotexts_sub = ax_sub.pie(
         mg_sizes,
         labels=[subpie_label(l, p) for l, p in zip(mg_labels, (np.array(mg_sizes)/mg_total)*100)],
         colors=subcolors,
         startangle=90,
         autopct=sub_autopct,
-        textprops={'fontsize': 8, 'fontweight': 'bold'},
-        wedgeprops=dict(edgecolor='white', linewidth=1),
+        textprops={'fontsize': 13.5, 'fontweight': 'bold'},  # Pie chart labels: 12 pt, bold
+        wedgeprops=dict(edgecolor='white', linewidth=1.5),
         labeldistance=1.1,
         pctdistance=0.7
     )
     
     # Style the labels
     for text in texts_sub:
-        text.set_fontsize(8)
+        text.set_fontsize(13)
         text.set_color('black')
-        text.set_fontweight('bold')
+        text.set_fontweight('bold')  # Bold for pie chart labels
     
     for autotext in autotexts_sub:
         autotext.set_color('white')
-        autotext.set_fontsize(7)
-        autotext.set_fontweight('bold')
+        autotext.set_fontsize(12)
+        autotext.set_fontweight('bold')  # Bold for pie chart percentages
 
     # Add category title with alloy count
     percentage = (alloy_count / total_alloys) * 100 if total_alloys > 0 else 0
+    # print(f"Category: {category}, Alloy count: {alloy_count}, Percentage: {percentage}")
     ax_sub.set_title(f'{category}\n{alloy_count} alloys ({percentage:.1f}%)', 
-                    fontsize=9, fontweight='bold', pad=10)
+                    fontsize=13.5, fontweight='bold', pad=15)  # Category/pie chart title: 13.5 pt bold
 
 # Update summary statistics
-summary_text = "Summary Statistics:\n"
-summary_text += "="*30 + "\n"
-summary_text += "By alloy count:\n"
-for count, category in top_categories:
-    pct = (count / total_alloys) * 100 if total_alloys > 0 else 0
-    summary_text += f"  {category}: {count} ({pct:.1f}%)\n"
+# summary_text = "Summary Statistics:\n"
+# summary_text += "="*30 + "\n"
+# summary_text += "By alloy count:\n"
+# for count, category in top_categories:
+#     pct = (count / total_alloys) * 100 if total_alloys > 0 else 0
+#     summary_text += f"  {category}: {count} ({pct:.1f}%)\n"
 
-if other_alloy_count > 0:
-    pct = (other_alloy_count / total_alloys) * 100 if total_alloys > 0 else 0
-    summary_text += f"  Other: {other_alloy_count} ({pct:.1f}%)\n"
+# if other_alloy_count > 0:
+#     pct = (other_alloy_count / total_alloys) * 100 if total_alloys > 0 else 0
+#     summary_text += f"  Other: {other_alloy_count} ({pct:.1f}%)\n"
 
-summary_text += f"\nTotal Alloys: {total_alloys}\n"
-summary_text += f"Network Edges: {G.number_of_edges()}\n"
-if 'total_weight' in locals():
-    summary_text += f"Total Co-occurrences: {total_weight}"
+# summary_text += f"\nTotal Alloys: {total_alloys}\n"
+# summary_text += f"Network Edges: {G.number_of_edges()}\n"
+# if 'total_weight' in locals():
+#     summary_text += f"Total Co-occurrences: {total_weight}"
 
-# Add text box with summary
-fig.text(0.02, 0.02, summary_text, fontsize=9, family='monospace',
-         bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8))
+# # Add text box with summary
+# fig.text(0.02, 0.02, summary_text, fontsize=13.5, family='monospace',
+#          bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8))  # Summary: 13.5 pt
 
 plt.tight_layout()
 plt.subplots_adjust(bottom=0.2)
