@@ -3,6 +3,125 @@ import re
 import csv
 from json import JSONDecodeError
 import pandas as pd
+from rapidfuzz import fuzz, process
+
+
+# ==================== Fuzzy Matching Utilities ====================
+
+def fuzzy_match_dict(query: str, mapping: dict, threshold: int = 80) -> str | None:
+    """
+    Find the best fuzzy match for a query string in a dictionary's keys.
+    
+    Args:
+        query: The string to match
+        mapping: Dictionary with keys to match against
+        threshold: Minimum similarity score (0-100) to consider a match
+    
+    Returns:
+        The mapped value if a match is found, None otherwise
+    """
+    if not query:
+        return None
+    
+    query_lower = query.lower()
+    
+    # First try exact match (fastest)
+    for key in mapping:
+        if key in query_lower:
+            return mapping[key]
+    
+    # Fall back to fuzzy matching
+    result = process.extractOne(
+        query_lower,
+        mapping.keys(),
+        scorer=fuzz.partial_ratio,
+        score_cutoff=threshold
+    )
+    
+    if result:
+        matched_key, score, _ = result
+        return mapping[matched_key]
+    
+    return None
+
+
+def fuzzy_contains(query: str, candidates: list[str], threshold: int = 85) -> bool:
+    """
+    Check if query fuzzy-matches any candidate in the list.
+    
+    Args:
+        query: The string to check
+        candidates: List of strings to match against
+        threshold: Minimum similarity score (0-100)
+    
+    Returns:
+        True if a fuzzy match is found
+    """
+    if not query or not candidates:
+        return False
+    
+    query_lower = query.lower().replace("-", "").replace(" ", "")
+    
+    for candidate in candidates:
+        candidate_clean = candidate.lower().replace("-", "").replace(" ", "")
+        # Exact substring check first
+        if candidate_clean in query_lower or query_lower in candidate_clean:
+            return True
+        # Fuzzy check
+        if fuzz.ratio(query_lower, candidate_clean) >= threshold:
+            return True
+    
+    return False
+
+
+def fuzzy_match_type(query: str, type_variants: dict[str, list[str]], threshold: int = 80) -> str:
+    """
+    Match experimental/theoretical type strings with fuzzy matching.
+    
+    Args:
+        query: The type string to classify
+        type_variants: Dict mapping canonical type to list of variants
+        threshold: Minimum similarity score
+    
+    Returns:
+        The canonical type string, or 'N/A' if no match
+    """
+    if not query:
+        return 'N/A'
+    
+    query_lower = query.lower().strip()
+    
+    for canonical, variants in type_variants.items():
+        for variant in variants:
+            if variant in query_lower:
+                return canonical
+            if fuzz.ratio(query_lower, variant) >= threshold:
+                return canonical
+    
+    return query  # Return original if no match found
+
+
+# Type classification variants for fuzzy matching
+EXPERIMENTAL_VARIANTS = [
+    'experimental', 'experiment', 'exp', 'synthesized', 'synthesis',
+    'fabricated', 'prepared', 'measured', 'characterized'
+]
+
+THEORETICAL_VARIANTS = [
+    'theoretical', 'theory', 'theo', 'calculated', 'calculation',
+    'simulated', 'simulation', 'computed', 'computational', 'predicted', 'dft'
+]
+
+BOTH_VARIANTS = [
+    'theoretical and experimental', 'experimental and theoretical',
+    'combination', 'both', 'combined', 'theo+exp', 'exp+theo'
+]
+
+TYPE_VARIANTS = {
+    'experimental': EXPERIMENTAL_VARIANTS,
+    'theoretical': THEORETICAL_VARIANTS,
+    'theoretical and experimental': BOTH_VARIANTS
+}
 
 
 def extract_phase_from_details(structure: str, details: str, phase_type: str) -> str:
@@ -17,45 +136,66 @@ def extract_phase_from_details(structure: str, details: str, phase_type: str) ->
     Returns:
         str: Formatted phase description
     """
-    # First convert basic structure names
+    # First convert basic structure names using fuzzy matching
     base_structure = structure
-    structure_lower = structure.lower()
     structure_mapping = {
         'body-centered cubic': 'BCC',
+        'body centered cubic': 'BCC',
+        'bcc': 'BCC',
         'face-centered cubic': 'FCC',
-        #'hexagonal close-packed': 'HCP',
+        'face centered cubic': 'FCC',
+        'fcc': 'FCC',
+        'hexagonal close-packed': 'HCP',
+        'hexagonal close packed': 'HCP',
+        'hexagonal': 'HCP',
+        'hcp': 'HCP',
         'body-centered tetragonal': 'BCT',
-        'hexagonal': 'HCP'
+        'body centered tetragonal': 'BCT',
+        'bct': 'BCT'
     }
     
-    for key, value in structure_mapping.items():
-        if key in structure_lower:
-            base_structure = value
-            break
+    # Use fuzzy matching for structure identification
+    matched_structure = fuzzy_match_dict(structure, structure_mapping, threshold=75)
+    if matched_structure:
+        base_structure = matched_structure
     
     if not details:
         return base_structure
     
     # Check for specific phases in details
-    details = details.lower()
+    details_lower = details.lower()
+    structure_lower = structure.lower()
     phase_str = base_structure
     
-    # Special phase indicators
-    special_phases = {
+    # Special phase indicators - separated by matching strategy
+    # Short identifiers that need EXACT word boundary matching (not fuzzy)
+    exact_match_phases = {
         'a2': 'A2',
         'b2': 'B2',
         'b19': 'B19',
         'l12': 'L12',
         'c14': 'C14',
         'c15': 'C15',
+    }
+    
+    # Longer identifiers that can use fuzzy matching
+    fuzzy_match_phases = {
         'cr2ta': 'Cr2Ta',
         'ti2ni': 'Ti2Ni',
         'spinel': 'Spinel',
-        'o-phase': 'O-phase',
         'laves': 'Laves',
+        'laves phase': 'Laves',
+        'amorphous': 'Amorphous',
+        'sigma phase': 'Sigma',
+        'sigma-phase': 'Sigma',
+        'mu-phase': 'Mu',
+        'mu phase': 'Mu',
         'dr+id': 'DR+ID',
-        'amorphous': 'Amorphous'
     }
+    
+    # O-phase requires special handling - only match if explicitly mentioned
+    # (not fuzzy, as "o" matches too many things like Co, Mo, No, etc.)
+    o_phase_patterns = ['o-phase', 'o phase', 'orthorhombic phase']
     
     # Check for numbered variants (BCC1, BCC2, etc.)
     # if any(char.isdigit() for char in details):
@@ -64,14 +204,45 @@ def extract_phase_from_details(structure: str, details: str, phase_type: str) ->
     #             phase_str = f"{base_structure}{i}"
     #             break
     
-    # Check for special phases
-    for key, value in special_phases.items():
-        if (key in details.lower()) and (key not in structure_lower) and (key not in phase_str.lower()):
-            if phase_str == base_structure:  # If we haven't modified the base structure yet
-                phase_str += (" "+value) 
+    # Detect phases using appropriate matching strategy
+    primary_phases = ["a2", "b2", "l12", "c14", "c15", "laves"]
+    detected_phases = []
+    
+    # Exact matching for short identifiers (word boundary aware)
+    for key, value in exact_match_phases.items():
+        # Use word boundary regex to avoid partial matches like "b2" in "nb2"
+        pattern = r'\b' + re.escape(key) + r'\b'
+        if re.search(pattern, details_lower) and not re.search(pattern, structure_lower):
+            if not fuzzy_contains(key, [phase_str.lower()]):
+                detected_phases.append((key, value))
+    
+    # Fuzzy matching only for longer, unambiguous identifiers
+    for key, value in fuzzy_match_phases.items():
+        # Require higher threshold and minimum length match
+        if len(key) >= 5 and fuzz.partial_ratio(key, details_lower) >= 90:
+            if not fuzzy_contains(value, [structure_lower, phase_str.lower()]):
+                detected_phases.append((key, value))
+        elif key in details_lower:  # Exact fallback for shorter ones
+            if not fuzzy_contains(value, [structure_lower, phase_str.lower()]):
+                detected_phases.append((key, value))
+    
+    # Special handling for O-phase - exact match only
+    for pattern in o_phase_patterns:
+        if pattern in details_lower:
+            if 'O-phase' not in phase_str:
+                detected_phases.append(('o-phase', 'O-phase'))
+            break
+    
+    # Process detected phases in order, avoiding duplicates
+    added_values = set()
+    for key, value in detected_phases:
+        if value not in added_values:
+            added_values.add(value)
+            if phase_str == base_structure:
+                phase_str += " " + value
             else:
-                if key in ["a2", "b2", "l12", "c14", "c15", "laves"]:
-                    phase_str += " "+value
+                if key in primary_phases:
+                    phase_str += " " + value
                 else:
                     phase_str += f" + {value}"
     
@@ -84,7 +255,7 @@ def extract_phase_from_details(structure: str, details: str, phase_type: str) ->
     ]
     
     for pattern in oxide_patterns:
-        matches = re.findall(pattern, details.lower())
+        matches = re.findall(pattern, details_lower)
         for match in matches:
             compound = match.upper()
             if 'CRO' in compound:
@@ -97,12 +268,13 @@ def extract_phase_from_details(structure: str, details: str, phase_type: str) ->
                 compound = 'AlNi'
             phase_str += f" + {compound}"
     
-    # Handle martensite
-    if 'martensite' in details.lower():
+    # Handle martensite with fuzzy matching
+    martensite_variants = ['martensite', 'martensitic', 'martensite phase']
+    if any(fuzz.partial_ratio(var, details_lower) >= 85 for var in martensite_variants):
         phase_str += ' martensite'
     
     # Handle specific element groupings
-    if 'tivzr' in details.lower() and 'taw' in details.lower():
+    if 'tivzr' in details_lower and 'taw' in details_lower:
         phase_str += ' (TiVZr + TaW)'
     
     # Add intermetallic designation if needed
@@ -173,24 +345,31 @@ def cd_to_csv(output_file: str, papers_names: list, names_list: list,  papers_js
                         phase.get('details', ''),
                         phase.get('phase_type', '')
                     )
-                    if (phase_str) and (phase_str not in " ".join(phases)):
+                    # Use fuzzy matching to avoid duplicate phases
+                    if phase_str and not fuzzy_contains(phase_str, phases, threshold=80):
                         phases.append(phase_str)
 
 
                 # Join phases and remove duplicates
                 phase_str = ' + '.join(sorted(set(phases))) if phases else 'N/A'
 
+                # Use fuzzy matching for precipitate duplicate detection
                 lower_phase_str = phase_str.lower().replace("-","")
+                existing_phases = [p.strip() for p in phase_str.split('+')]
                 precipitates = alloy_data.get('precipitates', [])
                 if len(precipitates) > 0:
                     for precipitate in precipitates:
-                        if (type(precipitate) == str):
-                            if (precipitate.lower() not in lower_phase_str):
-                                phase_str += " + " + precipitate
-                        elif precipitate.get("chemical_formula", "N/A").lower() not in lower_phase_str:
-                            phase_str += " + " + precipitate.get("chemical_formula", "N/A")
-                        else:
-                            continue
+                        precip_formula = None
+                        if isinstance(precipitate, str):
+                            precip_formula = precipitate
+                        elif isinstance(precipitate, dict):
+                            precip_formula = precipitate.get("chemical_formula", None)
+                        
+                        if precip_formula:
+                            # Fuzzy check against existing phases
+                            if not fuzzy_contains(precip_formula, existing_phases, threshold=80):
+                                phase_str += " + " + precip_formula
+                                existing_phases.append(precip_formula)
                         
 
                 nb_of_phase = phase_str.count("+") + 1 # len(crystalographic_phases)
@@ -214,11 +393,14 @@ def cd_to_csv(output_file: str, papers_names: list, names_list: list,  papers_js
                 experimental_details = 'N/A'
                 theoretical_details = 'N/A'
 
-                # Check for synthesis_or_calculation hui
+                # Check for synthesis_or_calculation
                 synthesis = alloy_data.get('synthesis_or_calculation', None)
                 if synthesis:
-                    exp_or_theo = synthesis.get('type', 'N/A')# .capitalize()
+                    raw_type = synthesis.get('type', 'N/A')
+                    # Use fuzzy matching to normalize the type
+                    exp_or_theo = fuzzy_match_type(raw_type, TYPE_VARIANTS)
                     method = synthesis.get('method', '')
+                    parameters = synthesis.get('parameters', {})
                     if method or parameters:
                         parameters = synthesis.get('parameters', {})
                         detail_parts = [method] if method else []
@@ -237,7 +419,7 @@ def cd_to_csv(output_file: str, papers_names: list, names_list: list,  papers_js
                                     dp.append(str(a))
                                 experimental_details = ', '.join(dp)
 
-                    if exp_or_theo in ['experimental', 'theoretical and experimental', "combination","both"]:
+                    if exp_or_theo in ['experimental', 'theoretical and experimental']:
                         experimental = synthesis.get('experimental_details', {})
                         if experimental:
                             method = experimental.get('method', '')
@@ -268,7 +450,7 @@ def cd_to_csv(output_file: str, papers_names: list, names_list: list,  papers_js
                                 experimental_details = ', '.join(detail_parts)
                             # print(exp_or_theo+" + "+experimental_details)
                             
-                    if exp_or_theo in ['theoretical', 'theoretical and experimental', "combination", "both"]:
+                    if exp_or_theo in ['theoretical', 'theoretical and experimental']:
                         # Extract Theoretical Details
                         theoretical = synthesis.get('theoretical_details', {})
                         if theoretical:
@@ -336,7 +518,7 @@ if __name__ == "__main__":
     # df = df.loc[df["context_missread_bug"] == True]
     # df = pd.read_csv('/Users/vdc/Downloads/deepseek-r1_results_right_dois_reordered.csv')
     cd_to_csv(
-        output_file="merged_data_unnested.csv",
+        output_file="database_of_HEA_fuzz.csv",
         papers_names=list(df["pdf_url"]), 
         names_list=list(df["article"]), 
         papers_jsons=list(df["prompt5"]), # list(df["prompt5"]),

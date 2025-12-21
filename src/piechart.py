@@ -560,7 +560,7 @@ if G.number_of_nodes() > 0:
         )
 
 # Style the network plot
-ax_network.set_title('Processing Methods Co-occurrence Network\n(Node size = alloy count, Edge thickness = co-occurrence frequency)', 
+ax_network.set_title('Processing Methods Co-occurrence Network',#\n(Node size = alloy count, Edge thickness = co-occurrence frequency)', 
                     fontsize=24, fontweight='bold', pad=30)  # Main title: 24 pt bold
 ax_network.set_aspect('equal')
 ax_network.axis('off')

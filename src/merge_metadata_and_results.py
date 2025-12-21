@@ -5,7 +5,7 @@ from json import JSONDecodeError
 import xml.etree.ElementTree as ET
 import pandas as pd
 
-def extract_article_title(file_path):
+def extract_article_title(file_path: str):
     """Extracts the article title from an XML file."""
     try:
         # Parse the XML file
